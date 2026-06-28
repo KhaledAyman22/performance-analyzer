@@ -3,11 +3,13 @@ Ticker Performance Report
 Run: streamlit run app.py
 """
 
+import json
 import re
 from datetime import date, timedelta
 
 import pandas as pd
 import streamlit as st
+from streamlit_local_storage import LocalStorage
 from tvDatafeed import Interval, TvDatafeed
 
 # ── PAGE CONFIG ───────────────────────────────────────────────────────────────
@@ -88,11 +90,48 @@ def parse_list(text: str) -> list[dict]:
     return out
 
 
+# ── PERSISTENCE (per-browser via localStorage) ────────────────────────────────
+LS_KEY = "pa_tickers"
+DEFAULT_TICKERS = [{"Exchange": "EGX", "Ticker": "COMI", "Listing Price": None}]
+
+# One instance per session — stores data in *this* browser only, so each user
+# (browser/device) keeps their own ticker list. No login required.
+local_storage = LocalStorage()
+
+
+def _default_df() -> pd.DataFrame:
+    return pd.DataFrame(DEFAULT_TICKERS)
+
+
+def load_tickers() -> pd.DataFrame:
+    """Load the ticker table from this browser's localStorage."""
+    raw = local_storage.getItem(LS_KEY)
+    if raw:
+        try:
+            data = json.loads(raw)
+            if data:
+                df = pd.DataFrame(data)
+                for col in ("Exchange", "Ticker", "Listing Price"):
+                    if col not in df.columns:
+                        df[col] = None
+                return df[["Exchange", "Ticker", "Listing Price"]]
+        except Exception:
+            pass
+    return _default_df()
+
+
+def save_tickers(df: pd.DataFrame) -> None:
+    """Persist the table to this browser's localStorage (only when it changed)."""
+    payload = df.to_json(orient="records")
+    if payload != st.session_state.get("_last_saved"):
+        local_storage.setItem(LS_KEY, payload, key="ls_save")
+        st.session_state._last_saved = payload
+
+
 # ── SESSION STATE ─────────────────────────────────────────────────────────────
 if "tickers_df" not in st.session_state:
-    st.session_state.tickers_df = pd.DataFrame(
-        [{"Exchange": "EGX", "Ticker": "COMI", "Listing Price": None}]
-    )
+    st.session_state.tickers_df = load_tickers()
+    st.session_state._last_saved = st.session_state.tickers_df.to_json(orient="records")
 
 # ── HEADER ────────────────────────────────────────────────────────────────────
 st.title("📊 Ticker Performance Report")
@@ -181,6 +220,7 @@ edited_df = st.data_editor(
     key="ticker_editor",
 )
 st.session_state.tickers_df = edited_df
+save_tickers(edited_df)
 
 col_run, col_clear = st.columns([5, 1])
 run_clicked = col_run.button(
